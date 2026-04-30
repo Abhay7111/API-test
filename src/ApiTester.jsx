@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { NavLink, Link } from 'react-router-dom';
+import JsonValidator from './JsonValidator';
+import JwtDebugger from './JwtDebugger';
+import StressTest from './StressTest';
+import HttpStatusCodeReference from './HttpStatusCodeReference';
 
 const ApiTester = () => {
   const urlInputRef = useRef(null);
@@ -13,10 +17,11 @@ const ApiTester = () => {
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('body');
   const [history, setHistory] = useState([]);
-  const [view, setView] = useState('dashboard'); // 'dashboard', 'graphs', 'coderunner', 'usertesting', 'audit', 'utils'
+  const [view, setView] = useState('dashboard'); // 'dashboard', 'graphs', 'coderunner', 'usertesting', 'audit', 'utils', 'stresstest', 'validator', 'jwt', 'httpstatus'
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem('api_hub_theme') || 'light');
+  const [showCookieModal, setShowCookieModal] = useState(() => !localStorage.getItem('api_hub_cookies_accepted'));
 
   // Advanced Request Tools State
   const [requestTab, setRequestTab] = useState('params');
@@ -24,6 +29,11 @@ const ApiTester = () => {
   const [params, setParams] = useState([{ key: '', value: '', enabled: true }]);
   const [authToken, setAuthToken] = useState('');
   const [authType, setAuthType] = useState('none');
+
+  // specialized inputs for POST/PUT
+  const [bodyMode, setBodyMode] = useState('builder'); // 'raw' or 'builder'
+  const [postFields, setPostFields] = useState([{ id: '1', key: 'title', value: '', type: 'text', enabled: true, children: [] }]);
+  const [putSourceUrl, setPutSourceUrl] = useState('');
 
   // Code Runner State
   const [codeRunnerLanguage, setCodeRunnerLanguage] = useState('javascript');
@@ -34,21 +44,31 @@ const ApiTester = () => {
   const [codeRunnerExecutionTime, setCodeRunnerExecutionTime] = useState(0);
   const [editorHeight, setEditorHeight] = useState(192); // h-48 = 192px
 
-  // User Testing State
-  const [userCount, setUserCount] = useState(5);
-  const [userResults, setUserResults] = useState([]);
-  const [userTestingLoading, setUserTestingLoading] = useState(false);
+  // User Testing State (Shadcn-like)
+  const [userTestConfig, setUserTestConfig] = useState({
+    userCount: 5,
+    concurrency: 1,
+    delayBetweenRequests: 100, // ms
+  });
+  const [userTestResults, setUserTestResults] = useState([]);
+  const [userTestLoading, setUserTestLoading] = useState(false);
+  const [userTestSummary, setUserTestSummary] = useState(null);
 
-  // Audit State
-  const [auditResult, setAuditResult] = useState(null);
-  const [auditLoading, setAuditLoading] = useState(false);
+  // Security Audit State (Shadcn-like)
+  const [securityHeaders, setSecurityHeaders] = useState([
+    { name: 'Content-Security-Policy', enabled: true, value: '' },
+    { name: 'Strict-Transport-Security', enabled: true, value: '' },
+    { name: 'X-Frame-Options', enabled: true, value: '' },
+    { name: 'X-Content-Type-Options', enabled: true, value: '' },
+    { name: 'Referrer-Policy', enabled: true, value: '' },
+  ]);
 
-  // Bulk Request State
+  // Bulk Request State (for dashboard's quick bulk send)
   const [bulkCount, setBulkCount] = useState(10);
   const [bulkDuration, setBulkDuration] = useState(1);
   const [bulkConcurrency, setBulkConcurrency] = useState(1);
   const [bulkDurationUnit, setBulkDurationUnit] = useState('seconds');
-  const [isBulkRunning, setIsBulkRunning] = useState(false);
+  const [isBulkRunning, setIsBulkRunning] = useState(false); // This state is for the dashboard's bulk send
   const [bulkProgress, setBulkProgress] = useState({
     completed: 0,
     total: 0,
@@ -61,8 +81,19 @@ const ApiTester = () => {
     countdown: 0,
   });
   const [bulkSummary, setBulkSummary] = useState(null);
-  const [showCookieModal, setShowCookieModal] = useState(() => !localStorage.getItem('api_hub_cookies_accepted'));
   const [bulkHistory, setBulkHistory] = useState([]);
+
+  // Security Audit State (Shadcn-like) - FIX: Declared missing state variables
+  const [auditResult, setAuditResult] = useState(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  // Auto-Test State
+  const [autoTestEnabled, setAutoTestEnabled] = useState(false);
+  const [autoTestDelay, setAutoTestDelay] = useState(2000);
+
+  // Analytics Sub-state
+  const [analyticsTab, setAnalyticsTab] = useState('overview');
+  const [statsFilterMethod, setStatsFilterMethod] = useState('ALL');
 
   // Utils State
   const [utilInput, setUtilInput] = useState('');
@@ -96,6 +127,18 @@ const ApiTester = () => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     localStorage.setItem('api_hub_theme', theme);
   }, [theme]);
+
+  // Auto-Test Logic: Triggers when a request ends
+  useEffect(() => {
+    if (autoTestEnabled && response && !loading && view === 'dashboard') {
+      const timer = setTimeout(() => {
+        if (autoTestEnabled) {
+          handleSend();
+        }
+      }, autoTestDelay);
+      return () => clearTimeout(timer);
+    }
+  }, [response, loading, autoTestEnabled]);
 
   useEffect(() => {
     let ctrlAltTriggered = false;
@@ -201,7 +244,15 @@ const ApiTester = () => {
   };
 
   // Analytics Logic
-  const bulkStats = bulkHistory.reduce((acc, curr) => {
+  const filteredHistory = statsFilterMethod === 'ALL' 
+    ? history 
+    : history.filter(h => h.method === statsFilterMethod);
+
+  const filteredBulk = statsFilterMethod === 'ALL'
+    ? bulkHistory
+    : bulkHistory.filter(h => h.method === statsFilterMethod);
+
+  const bulkStats = filteredBulk.reduce((acc, curr) => {
     acc.totalRequests += curr.total;
     acc.totalSuccesses += curr.successes;
     acc.totalFailures += curr.failures;
@@ -210,55 +261,81 @@ const ApiTester = () => {
   }, { totalRequests: 0, totalSuccesses: 0, totalFailures: 0, totalTime: 0 });
 
   const stats = {
-    total: history.length + bulkStats.totalRequests,
-    avgTime: (history.length + bulkStats.totalRequests) ? Math.round((history.reduce((acc, curr) => acc + (curr.time || 0), 0) + bulkStats.totalTime) / (history.length + bulkStats.totalRequests)) : 0,
-    successRate: (history.length + bulkStats.totalRequests) ? Math.round(((history.filter(h => h.status >= 200 && h.status < 300).length + bulkStats.totalSuccesses) / (history.length + bulkStats.totalRequests)) * 100) : 0,
-    statusCodes: history.reduce((acc, curr) => {
+    total: filteredHistory.length + bulkStats.totalRequests,
+    avgTime: (filteredHistory.length + bulkStats.totalRequests) ? Math.round((filteredHistory.reduce((acc, curr) => acc + (curr.time || 0), 0) + bulkStats.totalTime) / (filteredHistory.length + bulkStats.totalRequests)) : 0,
+    successRate: (filteredHistory.length + bulkStats.totalRequests) ? Math.round(((filteredHistory.filter(h => h.status >= 200 && h.status < 300).length + bulkStats.totalSuccesses) / (filteredHistory.length + bulkStats.totalRequests)) * 100) : 0,
+    statusCodes: filteredHistory.reduce((acc, curr) => {
       acc[curr.status] = (acc[curr.status] || 0) + 1;
       return acc;
     }, {}),
-    recentLatency: history.slice(0, 10).map(h => h.time).reverse(),
-    bulkRuns: bulkHistory.length,
+    recentLatency: filteredHistory.slice(0, 10).map(h => h.time).reverse(),
+    bulkRuns: filteredBulk.length,
     bulkTotalRequests: bulkStats.totalRequests,
     bulkSuccessRate: bulkStats.totalRequests ? Math.round((bulkStats.totalSuccesses / bulkStats.totalRequests) * 100) : 0,
   };
 
-  const sendRequestOnce = async (signal) => {
+  const sendRequestOnce = async (signal, overrideUrl, overrideMethod, overrideHeaders, overrideBody) => {
     const startTime = performance.now();
 
+    const targetUrl = overrideUrl || url;
+    const targetMethod = overrideMethod || method;
+
+    // Recursive helper to convert fields to JSON object
+    const fieldsToJSON = (fields) => { // This function needs to be defined outside or passed as a prop
+      const obj = {};
+      fields.forEach(f => {
+        if (f.enabled && f.key) {
+          obj[f.key] = f.type === 'object' ? fieldsToJSON(f.children || []) : f.value;
+        }
+      });
+      return obj;
+    };
+
+    // Determine body based on method and inputs
+    let targetBody = overrideBody !== undefined ? overrideBody : requestBody;
+    if (!overrideBody && ['POST', 'PUT', 'PATCH'].includes(targetMethod)) {
+      if (bodyMode === 'builder') {
+        targetBody = JSON.stringify(fieldsToJSON(postFields));
+      }
+    }
     // Validate and construct URL with params
     let urlObj;
     try {
-      urlObj = new URL(url, window.location.origin);
+      urlObj = new URL(targetUrl.startsWith('http') ? targetUrl : `https://${targetUrl}`, window.location.origin);
     } catch (err) {
       return { result: null, error: 'Invalid URL. Please use a full URL or a valid path (e.g. https://api.example.com/posts).' };
     }
 
-    params.forEach(p => {
-      if (p.enabled && p.key) urlObj.searchParams.append(p.key, p.value);
-    });
+    if (!overrideUrl) {
+      params.forEach(p => {
+        if (p.enabled && p.key) urlObj.searchParams.append(p.key, p.value);
+      });
+    }
 
     // Construct Headers
-    const headerObj = {};
-    headers.forEach(h => {
-      if (h.enabled && h.key) headerObj[h.key] = h.value;
-    });
-
-    if (authType === 'bearer' && authToken) {
-      headerObj['Authorization'] = `Bearer ${authToken}`;
+    let headerObj = {};
+    if (overrideHeaders) {
+      headerObj = overrideHeaders;
+    } else {
+      headers.forEach(h => {
+        if (h.enabled && h.key) headerObj[h.key] = h.value;
+      });
+      if (authType === 'bearer' && authToken) {
+        headerObj['Authorization'] = `Bearer ${authToken}`;
+      }
     }
 
     const options = {
-      method,
+      method: targetMethod,
       headers: headerObj,
       signal,
     };
 
-    if (['POST', 'PUT', 'PATCH'].includes(method) && requestBody) {
+    if (['POST', 'PUT', 'PATCH'].includes(targetMethod) && targetBody) {
       try {
-        options.body = JSON.stringify(JSON.parse(requestBody));
+        options.body = typeof targetBody === 'string' ? JSON.stringify(JSON.parse(targetBody)) : JSON.stringify(targetBody);
       } catch (e) {
-        return { result: null, error: 'Invalid JSON in Request Body' };
+        options.body = targetBody;
       }
     }
 
@@ -337,7 +414,26 @@ const ApiTester = () => {
     setLoading(false);
   };
 
-  const handleBulkSend = async () => {
+  const handleFetchPutSource = async () => {
+    if (!putSourceUrl) return alert("Please enter the Source GET URL");
+    setLoading(true);
+    try {
+      const { result, error } = await sendRequestOnce(null, putSourceUrl, 'GET');
+      if (error) {
+        setError(error);
+      } else if (result) {
+        setRequestBody(typeof result.data === 'object' ? JSON.stringify(result.data, null, 2) : result.data);
+        setActiveTab('body');
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // This function is now specifically for the main dashboard's bulk send, not the StressTest tool
+  const handleDashboardBulkSend = async () => {
     if (!url) {
       setError('Please provide a URL first');
       return;
@@ -472,7 +568,7 @@ const ApiTester = () => {
     setBulkSummary(summary);
 
     // Save to bulk history
-    const updatedBulkHistory = [summary, ...bulkHistory].slice(0, 50); // Keep last 50
+    const updatedBulkHistory = [summary, ...bulkHistory].slice(0, 50);
     setBulkHistory(updatedBulkHistory);
     localStorage.setItem('api_hub_bulk_history', JSON.stringify(updatedBulkHistory));
 
@@ -480,9 +576,58 @@ const ApiTester = () => {
   };
 
   useEffect(() => {
+    // This ensures handleSend is always up-to-date for keyboard shortcuts
     sendRef.current = handleSend;
   }, [handleSend]);
 
+  // Function to run a single request, used by StressTest.jsx
+  const runSingleRequestForTool = async (targetUrl, methodOverride, signal) => {
+    // Use current state of headers, params, auth from ApiTester.jsx
+    const currentHeaders = headers.filter(h => h.enabled && h.key).reduce((acc, h) => ({ ...acc, [h.key]: h.value }), {});
+    const currentParams = params.filter(p => p.enabled && p.key).reduce((acc, p) => ({ ...acc, [p.key]: p.value }), {});
+    
+    if (authType === 'bearer' && authToken) {
+      currentHeaders['Authorization'] = `Bearer ${authToken}`;
+    }
+
+    // Construct URL with params
+    const urlObj = new URL(targetUrl, window.location.origin);
+    Object.entries(currentParams).forEach(([key, value]) => urlObj.searchParams.append(key, value));
+
+    return sendRequestOnce(signal, urlObj.toString(), methodOverride || 'GET', currentHeaders, requestBody);
+  };
+
+  // POST Field management
+  const addPostField = (parentId = null, type = 'text') => {
+    const newField = { id: Date.now().toString(), key: '', value: '', type, enabled: true, children: [] };
+    if (!parentId) {
+      setPostFields([...postFields, newField]);
+    } else {
+      const addRecursive = (list) => list.map(f => {
+        if (f.id === parentId) return { ...f, children: [...(f.children || []), newField] };
+        if (f.children) return { ...f, children: addRecursive(f.children) };
+        return f;
+      });
+      setPostFields(addRecursive(postFields));
+    }
+  };
+
+  const updatePostField = (id, field, value) => {
+    const updateRecursive = (list) => list.map(f => {
+      if (f.id === id) return { ...f, [field]: value };
+      if (f.children) return { ...f, children: updateRecursive(f.children) };
+      return f;
+    });
+    setPostFields(updateRecursive(postFields));
+  };
+
+  const removePostField = (id) => {
+    const removeRecursive = (list) => list.filter(f => f.id !== id).map(f => ({
+      ...f,
+      children: f.children ? removeRecursive(f.children) : []
+    }));
+    setPostFields(removeRecursive(postFields));
+  };
 
   const loadFromHistory = (item) => {
     setUrl(item.url);
@@ -491,6 +636,21 @@ const ApiTester = () => {
     setError(null);
     setShowHistoryModal(false);
     setView('dashboard');
+  };
+
+  const exportAnalytics = () => {
+    const report = {
+      generatedAt: new Date().toISOString(),
+      summary: stats,
+      rawHistory: history,
+      bulkHistory: bulkHistory
+    };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `api-tester-report-${Date.now()}.json`;
+    a.click();
   };
 
   const copyToClipboard = (text) => {
@@ -551,39 +711,106 @@ const ApiTester = () => {
     }
   };
 
-  const runUserTest = async () => {
+  const runUserTest = async () => { // Renamed from runUserTest to avoid conflict
     if (!url) return alert("Please enter a URL first");
-    setUserTestingLoading(true);
-    setUserResults([]);
-    
-    const promises = Array.from({ length: userCount }).map(async (_, i) => {
-      const { result, error } = await sendRequestOnce();
-      return { id: i + 1, status: result?.status || 'Error', time: result?.time || 0, success: result?.success || false };
+    setUserTestLoading(true);
+    setUserTestResults([]);
+    setUserTestSummary(null);
+
+    const { userCount, concurrency, delayBetweenRequests } = userTestConfig;
+    const startTime = performance.now();
+    const latencies = [];
+    let successes = 0;
+    let failures = 0;
+    let completedRequests = 0;
+
+    const worker = async (workerId) => {
+      for (let i = workerId; i < userCount; i += concurrency) {
+        if (!userTestLoading) break; // Allow stopping the test
+
+        const requestStartTime = performance.now();
+        const { result, error } = await sendRequestOnce(); // Use the main sendRequestOnce
+        const requestEndTime = performance.now();
+        const latency = Math.round(requestEndTime - requestStartTime);
+
+        completedRequests++;
+        latencies.push(latency);
+
+        const success = result?.success || false;
+        if (success) {
+          successes++;
+        } else {
+          failures++;
+        }
+
+        setUserTestResults(prev => [...prev, {
+          id: i + 1,
+          status: result?.status || 'Error',
+          time: latency,
+          success: success,
+        }]);
+
+        // Update summary periodically or at the end
+        if (completedRequests % Math.max(1, Math.floor(userCount / 10)) === 0 || completedRequests === userCount) {
+          setUserTestSummary({
+            total: completedRequests,
+            successes,
+            failures,
+            avgTime: latencies.length ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : 0,
+            successRate: completedRequests ? Math.round((successes / completedRequests) * 100) : 0,
+            elapsed: Math.round(performance.now() - startTime),
+          });
+        }
+
+        if (delayBetweenRequests > 0) {
+          await new Promise(resolve => setTimeout(resolve, delayBetweenRequests));
+        }
+      }
+    };
+
+    const workers = Array.from({ length: concurrency }, (_, i) => worker(i));
+    await Promise.all(workers);
+
+    const finalElapsedTime = Math.round(performance.now() - startTime);
+    setUserTestSummary({
+      total: completedRequests,
+      successes,
+      failures,
+      avgTime: latencies.length ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : 0,
+      successRate: completedRequests ? Math.round((successes / completedRequests) * 100) : 0,
+      elapsed: finalElapsedTime,
     });
 
-    const results = await Promise.all(promises);
-    setUserResults(results);
-    setUserTestingLoading(false);
+    setUserTestLoading(false);
   };
 
-  const runAudit = async () => {
+  const stopUserTest = () => {
+    setUserTestLoading(false); // This will break the worker loops
+  };
+
+  const runSecurityAudit = async () => { // Renamed from runAudit
     if (!url) return alert("Please enter a URL first");
     setAuditLoading(true);
     const { result } = await sendRequestOnce();
     
     if (result) {
-      const secHeaders = [
-        'content-security-policy',
-        'strict-transport-security',
-        'x-frame-options',
-        'x-content-type-options',
-        'referrer-policy'
-      ];
-      const found = Object.keys(result.headers).filter(h => secHeaders.includes(h.toLowerCase()));
+      const auditedHeaders = securityHeaders.map(header => {
+        const foundHeader = Object.keys(result.headers).find(h => h.toLowerCase() === header.name.toLowerCase());
+        return {
+          ...header,
+          value: foundHeader ? result.headers[foundHeader] : '',
+          present: !!foundHeader,
+        };
+      });
+
+      const enabledHeaders = auditedHeaders.filter(h => h.enabled);
+      const found = enabledHeaders.filter(h => h.present);
+
       setAuditResult({
         https: url.toLowerCase().startsWith('https'),
-        securityHeaders: found,
-        totalSecHeaders: secHeaders.length,
+        auditedHeaders: auditedHeaders,
+        totalEnabledHeaders: enabledHeaders.length,
+        foundHeadersCount: found.length,
         latency: result.time,
         status: result.status
       });
@@ -600,9 +827,22 @@ const ApiTester = () => {
       } else if (utilType === 'base64-decode') {
         setUtilOutput(atob(utilInput));
       }
+      else if (utilType === 'url-encode') {
+        setUtilOutput(encodeURIComponent(utilInput));
+      } else if (utilType === 'url-decode') {
+        setUtilOutput(decodeURIComponent(utilInput));
+      } else if (utilType === 'hash-md5') {
+        setUtilOutput('MD5 hash not implemented yet');
+      } else if (utilType === 'hash-sha256') {
+        setUtilOutput('SHA256 hash not implemented yet');
+      }
     } catch (err) {
       setUtilOutput('Error: ' + err.message);
     }
+  };
+
+  const clearUtilInput = () => {
+    setUtilInput('');
   };
 
   const NavItem = ({ id, label, icon }) => (
@@ -654,6 +894,10 @@ const ApiTester = () => {
           <NavItem id="usertesting" label="User Testing" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>} />
           <NavItem id="audit" label="Security Audit" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>} />
           <NavItem id="utils" label="Utilities" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z" /></svg>} />
+          <NavItem id="stresstest" label="Stress Test" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>} />
+          <NavItem id="validator" label="JSON Validator" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>} />
+          <NavItem id="jwt" label="JWT Debugger" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>} />
+          <NavItem id="httpstatus" label="HTTP Status" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" /></svg>} />
 
           <button 
             onClick={() => setShowHistoryModal(true)}
@@ -823,98 +1067,150 @@ const ApiTester = () => {
 
         {view === 'graphs' ? (
           /* PERFORMANCE VIEW (GRAPHS) */
-          <div className="p-4 md:p-8 space-y-8 animate-in slide-in-from-bottom-4 duration-300 bg-gray-50 dark:bg-slate-900/30">
-             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Success Rate Chart */}
-                <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-slate-800">
-                   <h3 className="text-sm font-bold text-gray-600 dark:text-slate-300 uppercase mb-6 tracking-widest">Health & Success Rate</h3>
-                   <div className="relative pt-1">
-                      <div className="flex mb-2 items-center justify-between">
-                        <span className="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-950">Success</span>
-                        <span className="text-xs font-semibold inline-block text-green-600 dark:text-green-400">{stats.successRate}%</span>
-                      </div>
-                      <div className="overflow-hidden h-4 mb-4 text-xs flex rounded-full bg-gray-200 dark:bg-slate-800">
-                        <div style={{ width: `${stats.successRate}%` }} className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-green-500 transition-all duration-1000"></div>
-                      </div>
-                   </div>
-                   <div className="grid grid-cols-2 gap-4 mt-6">
-                      <div className="p-4 bg-gray-100 dark:bg-slate-800/50 rounded-xl">
-                         <div className="text-2xl font-black text-gray-900 dark:text-slate-100">{stats.total}</div>
-                         <div className="text-[10px] font-bold text-gray-500 dark:text-slate-400 uppercase">Tests Run</div>
-                      </div>
-                      <div className="p-4 bg-gray-100 dark:bg-slate-800/50 rounded-xl">
-                         <div className="text-2xl font-black text-blue-600 dark:text-blue-400">{stats.avgTime}ms</div>
-                         <div className="text-[10px] font-bold text-gray-500 dark:text-slate-400 uppercase">Avg Latency</div>
-                      </div>
-                   </div>
+          <div className="p-4 md:p-8 space-y-6 animate-in fade-in duration-300 bg-white dark:bg-slate-950">
+             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b pb-6">
+                <div>
+                  <h2 className="text-2xl font-bold tracking-tight">Performance Analytics</h2>
+                  <p className="text-muted-foreground text-sm">Monitor endpoint health, latency, and success patterns.</p>
                 </div>
-
-                {/* Bulk Statistics Chart */}
-                <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-slate-800">
-                   <h3 className="text-sm font-bold text-gray-600 dark:text-slate-300 uppercase mb-6 tracking-widest">Bulk Run Statistics</h3>
-                   <div className="relative pt-1">
-                      <div className="flex mb-2 items-center justify-between">
-                        <span className="text-xs font-semibold inline-block py-1 px-2 uppercase rounded-full text-cyan-600 dark:text-cyan-400 bg-cyan-100 dark:bg-cyan-950">Bulk Success</span>
-                        <span className="text-xs font-semibold inline-block text-cyan-600 dark:text-cyan-400">{stats.bulkSuccessRate}%</span>
-                      </div>
-                      <div className="overflow-hidden h-4 mb-4 text-xs flex rounded-full bg-gray-200 dark:bg-slate-800">
-                        <div style={{ width: `${stats.bulkSuccessRate}%` }} className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-cyan-500 transition-all duration-1000"></div>
-                      </div>
-                   </div>
-                   <div className="grid grid-cols-2 gap-4 mt-6">
-                      <div className="p-4 bg-gray-100 dark:bg-slate-800/50 rounded-xl">
-                         <div className="text-2xl font-black text-gray-900 dark:text-slate-100">{stats.bulkRuns}</div>
-                         <div className="text-[10px] font-bold text-gray-500 dark:text-slate-400 uppercase">Bulk Runs</div>
-                      </div>
-                      <div className="p-4 bg-gray-100 dark:bg-slate-800/50 rounded-xl">
-                         <div className="text-2xl font-black text-cyan-600 dark:text-cyan-400">{stats.bulkTotalRequests}</div>
-                         <div className="text-[10px] font-bold text-gray-500 dark:text-slate-400 uppercase">Bulk Requests</div>
-                      </div>
-                   </div>
-                </div>
-
-                {/* Latency Trend Graph (SVG) */}
-                <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-slate-800">
-                   <h3 className="text-sm font-bold text-gray-600 dark:text-slate-300 uppercase mb-6 tracking-widest">Recent Latency Trend</h3>
-                   <div className="h-32 flex items-end gap-2 px-2">
-                      {stats.recentLatency.map((val, idx) => {
-                        const height = Math.max(12, Math.min(100, (val / (Math.max(stats.avgTime, 1000) || 1000)) * 100));
-                        return (
-                          <div key={idx} className="flex-1 rounded-t-md relative group" style={{ height: `${height}%`, background: 'linear-gradient(180deg, #22c55e, #0f766e)' }}>
-                             <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-900 dark:bg-slate-800 text-cyan-600 dark:text-cyan-300 text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">{val} ms</div>
-                          </div>
-                        );
-                      })}
-                   </div>
-                   <div className="border-t border-gray-200 dark:border-slate-700 mt-2 flex justify-between text-[10px] font-bold text-gray-600 dark:text-slate-400 uppercase pt-2">
-                      <span>Older</span>
-                      <span>Newest Requests</span>
-                   </div>
-                </div>
-
-                {/* Status Code Distribution */}
-                <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-slate-800 lg:col-span-2">
-                   <h3 className="text-sm font-bold text-gray-600 dark:text-slate-300 uppercase mb-6 tracking-widest">Status Code Breakdown</h3>
-                   <div className="space-y-3">
-                      {Object.entries(stats.statusCodes).map(([code, count]) => {
-                        const ratio = stats.total ? (count / stats.total) * 100 : 0;
-                        const base = code.startsWith('2') ? 'from-emerald-500 to-teal-400' : 'from-rose-500 to-orange-500';
-                        return (
-                          <div key={code} className="grid grid-cols-[auto_1fr_auto] gap-4 items-center">
-                             <span className="w-12 text-xs font-bold text-gray-700 dark:text-slate-300">{code}</span>
-                             <div className="h-2 rounded-full bg-gray-300 dark:bg-slate-700 overflow-hidden border border-gray-400 dark:border-slate-600">
-                                <div className={`h-full bg-gradient-to-r ${base}`} style={{ width: `${Math.max(ratio, 3)}%` }} />
-                             </div>
-                             <span className="text-xs font-bold text-gray-700 dark:text-slate-300">{count}</span>
-                          </div>
-                        );
-                      })}
-                   </div>
+                <div className="flex items-center gap-2">
+                   <select 
+                    value={statsFilterMethod}
+                    onChange={(e) => setStatsFilterMethod(e.target.value)}
+                    className="text-xs border rounded-md p-2 bg-transparent font-medium"
+                   >
+                      <option value="ALL">All Methods</option>
+                      {methods.map(m => <option key={m} value={m}>{m}</option>)}
+                   </select>
+                   <button onClick={exportAnalytics} className="text-xs bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 px-4 py-2 rounded-md font-bold transition-opacity hover:opacity-90">
+                      Export Data
+                   </button>
                 </div>
              </div>
-             <div className="text-center">
-                <button onClick={() => setView('dashboard')} className="bg-gray-800 dark:bg-slate-800 hover:bg-gray-700 dark:hover:bg-slate-700 text-white px-8 py-3 rounded-xl font-bold shadow-lg transition-all">
-                  Back to Request Builder
+
+             <div className="flex border-b">
+                {['overview', 'distribution', 'history'].map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setAnalyticsTab(tab)}
+                    className={`px-6 py-2 text-sm font-semibold capitalize transition-all border-b-2 ${analyticsTab === tab ? 'border-slate-900 dark:border-slate-100 text-slate-900 dark:text-slate-100' : 'border-transparent text-slate-500'}`}
+                  >
+                    {tab}
+                  </button>
+                ))}
+             </div>
+
+             {analyticsTab === 'overview' ? (
+               <>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="p-6 rounded-lg border bg-card text-card-foreground shadow-sm">
+                      <p className="text-xs font-medium text-muted-foreground uppercase mb-2">Success Rate</p>
+                      <p className="text-2xl font-bold">{stats.successRate}%</p>
+                      <div className="mt-4 h-1.5 w-full bg-secondary rounded-full overflow-hidden">
+                        <div className="h-full bg-emerald-500" style={{ width: `${stats.successRate}%` }} />
+                      </div>
+                    </div>
+                    <div className="p-6 rounded-lg border bg-card text-card-foreground shadow-sm">
+                      <p className="text-xs font-medium text-muted-foreground uppercase mb-2">Avg Latency</p>
+                      <p className="text-2xl font-bold">{stats.avgTime}ms</p>
+                      <p className="text-[10px] text-muted-foreground mt-2">Overall response time</p>
+                    </div>
+                    <div className="p-6 rounded-lg border bg-card text-card-foreground shadow-sm">
+                      <p className="text-xs font-medium text-muted-foreground uppercase mb-2">Total Volume</p>
+                      <p className="text-2xl font-bold">{stats.total}</p>
+                      <p className="text-[10px] text-muted-foreground mt-2">{stats.bulkRuns} bulk sessions</p>
+                    </div>
+                    <div className="p-6 rounded-lg border bg-card text-card-foreground shadow-sm">
+                      <p className="text-xs font-medium text-muted-foreground uppercase mb-2">Reliability</p>
+                      <p className="text-2xl font-bold">{stats.successRate > 95 ? 'Stable' : stats.successRate > 80 ? 'Warning' : 'Degraded'}</p>
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="lg:col-span-2 p-6 rounded-lg border bg-card shadow-sm">
+                    <h3 className="text-sm font-bold mb-6">Recent Latency Trend (Last 10)</h3>
+                    <div className="h-48 flex items-end gap-3 px-2">
+                        {stats.recentLatency.length > 0 ? stats.recentLatency.map((val, idx) => {
+                          const height = Math.max(8, Math.min(100, (val / (Math.max(...stats.recentLatency, 500) || 500)) * 100));
+                          return (
+                            <div key={idx} className="flex-1 bg-slate-900 dark:bg-slate-100 rounded-sm relative group transition-all hover:opacity-80" style={{ height: `${height}%` }}>
+                              <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">{val} ms</div>
+                            </div>
+                          );
+                        }) : <div className="w-full text-center text-muted-foreground text-xs italic">No data yet</div>}
+                    </div>
+                  </div>
+                  <div className="p-6 rounded-lg border bg-card shadow-sm">
+                    <h3 className="text-sm font-bold mb-6">Method Mix</h3>
+                    <div className="space-y-4">
+                        {methods.map(m => {
+                          const count = history.filter(h => h.method === m).length;
+                          const percent = history.length ? (count / history.length) * 100 : 0;
+                          return (
+                            <div key={m}>
+                              <div className="flex justify-between text-[10px] font-bold mb-1 uppercase">
+                                <span>{m}</span>
+                                <span>{count} req</span>
+                              </div>
+                              <div className="h-1 w-full bg-secondary rounded-full overflow-hidden">
+                                <div className="h-full bg-slate-400" style={{ width: `${percent}%` }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                </div>
+               </>
+             ) : analyticsTab === 'distribution' ? (
+               <div className="p-6 rounded-lg border bg-card shadow-sm">
+                  <h3 className="text-sm font-bold mb-6">HTTP Status Code Distribution</h3>
+                  <div className="space-y-4">
+                      {Object.keys(stats.statusCodes).length > 0 ? Object.entries(stats.statusCodes).sort().map(([code, count]) => {
+                        const ratio = stats.total ? (count / stats.total) * 100 : 0;
+                        const color = code.startsWith('2') ? 'bg-emerald-500' : code.startsWith('4') ? 'bg-orange-500' : 'bg-rose-500';
+                        return (
+                          <div key={code} className="grid grid-cols-[60px_1fr_40px] gap-4 items-center">
+                             <span className="text-xs font-mono font-bold">{code}</span>
+                             <div className="h-3 rounded-full bg-secondary overflow-hidden">
+                                <div className={`h-full ${color} transition-all`} style={{ width: `${ratio}%` }} />
+                             </div>
+                             <span className="text-xs text-right font-semibold">{count}</span>
+                          </div>
+                        );
+                      }) : <div className="text-center text-muted-foreground py-10">No status codes logged</div>}
+                  </div>
+               </div>
+             ) : (
+               <div className="rounded-lg border bg-card shadow-sm overflow-hidden">
+                  <div className="max-h-[500px] overflow-auto">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-muted text-muted-foreground uppercase font-bold sticky top-0">
+                        <tr>
+                          <th className="p-3">Method</th>
+                          <th className="p-3">URL</th>
+                          <th className="p-3 text-right">Status</th>
+                          <th className="p-3 text-right">Time</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {filteredHistory.map(h => (
+                          <tr key={h.id} className="hover:bg-muted/50 transition-colors">
+                            <td className="p-3 font-bold">{h.method}</td>
+                            <td className="p-3 font-mono truncate max-w-xs">{h.url}</td>
+                            <td className={`p-3 text-right font-bold ${h.status < 300 ? 'text-emerald-600' : 'text-rose-600'}`}>{h.status}</td>
+                            <td className="p-3 text-right text-muted-foreground">{h.time}ms</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+               </div>
+             )}
+
+             <div className="pt-6">
+                <button onClick={() => setView('dashboard')} className="text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors">
+                  ← Back to Request Builder
                 </button>
              </div>
           </div>
@@ -1071,22 +1367,22 @@ const ApiTester = () => {
                   <label className="text-xs font-bold text-gray-500 uppercase">Number of Users</label>
                   <input 
                     type="number" 
-                    value={userCount} 
-                    onChange={(e) => setUserCount(e.target.value)}
+                    value={userTestConfig.userCount} 
+                    onChange={(e) => setUserTestConfig(prev => ({ ...prev, userCount: parseInt(e.target.value) || 1 }))}
                     className="p-2 border rounded-md dark:bg-slate-800 dark:border-slate-700 w-32"
                   />
                 </div>
                 <button 
                   onClick={runUserTest}
-                  disabled={userTestingLoading}
+                  disabled={userTestLoading}
                   className="px-6 py-2 bg-indigo-600 text-white rounded-md font-bold hover:bg-indigo-700 disabled:bg-indigo-400 transition-colors"
                 >
-                  {userTestingLoading ? 'Simulating...' : 'Run User Test'}
+                  {userTestLoading ? 'Simulating...' : 'Run User Test'}
                 </button>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                {userResults.map(user => (
+                {userTestResults.map(user => (
                   <div key={user.id} className="p-4 rounded-lg border border-gray-100 dark:border-slate-800 bg-gray-50 dark:bg-slate-950 flex flex-col items-center gap-2">
                     <div className={`w-10 h-10 rounded-full flex items-center justify-center ${user.success ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
                       <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" /></svg>
@@ -1105,7 +1401,7 @@ const ApiTester = () => {
               <h2 className="text-lg font-bold mb-4">Security & Health Audit</h2>
               <p className="text-sm text-gray-500 mb-6">Analyze the security posture and performance of your endpoint.</p>
               <button 
-                onClick={runAudit}
+                onClick={runSecurityAudit}
                 disabled={auditLoading}
                 className="px-6 py-2 bg-emerald-600 text-white rounded-md font-bold hover:bg-emerald-700 disabled:bg-emerald-400 transition-colors mb-8"
               >
@@ -1124,7 +1420,7 @@ const ApiTester = () => {
                     <div className="p-4 rounded-xl border border-gray-100 dark:border-slate-800 bg-gray-50 dark:bg-slate-950">
                       <p className="text-[10px] font-bold text-gray-500 uppercase mb-2">Security Headers</p>
                       <div className="text-lg font-bold text-blue-500">
-                        {auditResult.securityHeaders.length} / {auditResult.totalSecHeaders}
+                        {auditResult.foundHeadersCount} / {auditResult.totalEnabledHeaders}
                       </div>
                     </div>
                     <div className="p-4 rounded-xl border border-gray-100 dark:border-slate-800 bg-gray-50 dark:bg-slate-950">
@@ -1138,13 +1434,12 @@ const ApiTester = () => {
                   <div className="bg-gray-50 dark:bg-slate-950 p-4 rounded-lg border border-gray-100 dark:border-slate-800">
                     <h3 className="text-sm font-bold mb-4 uppercase text-gray-500 tracking-wider">Security Header Checklist</h3>
                     <div className="space-y-2">
-                      {['Content-Security-Policy', 'Strict-Transport-Security', 'X-Frame-Options', 'X-Content-Type-Options', 'Referrer-Policy'].map(h => {
-                        const found = auditResult.securityHeaders.some(sh => sh.toLowerCase() === h.toLowerCase());
+                      {auditResult.auditedHeaders.filter(h => h.enabled).map(h => {
                         return (
-                          <div key={h} className="flex items-center justify-between py-2 border-b border-gray-100 dark:border-slate-900 last:border-0">
-                            <span className="text-sm font-mono text-gray-700 dark:text-slate-300">{h}</span>
-                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${found ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                              {found ? 'PRESENT' : 'MISSING'}
+                          <div key={h.name} className="flex items-center justify-between py-2 border-b border-gray-100 dark:border-slate-900 last:border-0">
+                            <span className="text-sm font-mono text-gray-700 dark:text-slate-300">{h.name}</span>
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${h.present ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                              {h.present ? 'PRESENT' : 'MISSING'}
                             </span>
                           </div>
                         );
@@ -1205,6 +1500,26 @@ const ApiTester = () => {
               </div>
             </div>
           </div>
+        ) : view === 'stresstest' ? (
+          <div className="p-4 md:p-8 animate-in fade-in duration-300">
+            <StressTest
+              runSingleRequest={runSingleRequestForTool}
+              currentUrl={url}
+              updateHistory={updateHistory}
+            />
+          </div>
+        ) : view === 'validator' ? (
+          <div className="p-4 md:p-8 animate-in fade-in duration-300">
+            <JsonValidator />
+          </div>
+        ) : view === 'jwt' ? (
+          <div className="p-4 md:p-8 animate-in fade-in duration-300 h-full overflow-hidden">
+            <JwtDebugger />
+          </div>
+        ) : view === 'httpstatus' ? (
+          <div className="p-4 md:p-8 animate-in fade-in duration-300 h-full overflow-hidden">
+            <HttpStatusCodeReference />
+          </div>
         ) : (
           /* DASHBOARD VIEW (BUILDER) */
           <div className="p-3 sm:p-4 md:p-8 space-y-4 sm:space-y-6 animate-in fade-in duration-300 bg-gray-50 dark:bg-slate-900/30">
@@ -1248,17 +1563,45 @@ const ApiTester = () => {
                   </div>
                 </div>
 
-                <input 
-                  ref={urlInputRef}
-                  type="text" 
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://api.example.com/v1/endpoint"
-                  className="w-full sm:flex-grow p-2 border rounded-md font-mono text-xs sm:text-sm bg-white dark:bg-slate-800 border-gray-300 dark:border-slate-700 text-gray-900 dark:text-slate-200 placeholder-gray-500 dark:placeholder-slate-500 focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all"
-                />
+                {method === 'PUT' ? (
+                  <div className="flex flex-col gap-2 flex-grow">
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        value={putSourceUrl}
+                        onChange={(e) => setPutSourceUrl(e.target.value)}
+                        placeholder="1. GET URL - Fetch data to update"
+                        className="flex-grow p-2 border rounded-md font-mono text-xs bg-white dark:bg-slate-800 border-gray-300 dark:border-slate-700 text-gray-900 dark:text-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none"
+                      />
+                      <button 
+                        onClick={handleFetchPutSource}
+                        className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-[10px] font-bold uppercase transition-all"
+                      >
+                        Fetch
+                      </button>
+                    </div>
+                    <input 
+                      ref={urlInputRef}
+                      type="text" 
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      placeholder="2. PUT URL - Endpoint to update"
+                      className="p-2 border rounded-md font-mono text-xs bg-white dark:bg-slate-800 border-gray-300 dark:border-slate-700 text-gray-900 dark:text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                  </div>
+                ) : (
+                  <input 
+                    ref={urlInputRef}
+                    type="text" 
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    placeholder={method === 'POST' ? "Enter POST endpoint URL" : "https://api.example.com/v1/endpoint"}
+                    className="w-full sm:flex-grow p-2 border rounded-md font-mono text-xs sm:text-sm bg-white dark:bg-slate-800 border-gray-300 dark:border-slate-700 text-gray-900 dark:text-slate-200 placeholder-gray-500 dark:placeholder-slate-500 focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all"
+                  />
+                )}
 
                 <button 
-                  onClick={handleSend}
+                  onClick={handleSend} // This is for single send
                   disabled={loading || isBulkRunning}
                   className="w-full sm:w-auto px-3 sm:px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-md font-semibold text-xs sm:text-sm transition-all flex items-center justify-center gap-2"
                 >
@@ -1330,8 +1673,8 @@ const ApiTester = () => {
                     </div>
                   </div>
 
-                  <button 
-                    onClick={handleBulkSend}
+                  <button
+                    onClick={handleDashboardBulkSend} // This is for dashboard's quick bulk send
                     disabled={loading || isBulkRunning}
                     className="w-full sm:w-auto px-3 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-cyan-400 text-white rounded-md font-semibold text-xs sm:text-sm transition-all flex items-center justify-center gap-2"
                   >
@@ -1345,15 +1688,109 @@ const ApiTester = () => {
             </div>
 
             {['POST', 'PUT', 'PATCH'].includes(method) && (
-              <div className="p-2 sm:p-4 border-t border-gray-200 dark:border-slate-800">
-                <label className="text-xs sm:text-sm font-semibold text-gray-600 dark:text-slate-400 uppercase block mb-2 sm:mb-3">Request Body</label>
-                <textarea 
-                  ref={bodyInputRef}
-                  value={requestBody}
-                  onChange={(e) => setRequestBody(e.target.value)}
-                  placeholder='{"key": "value"}'
-                  className="w-full h-24 sm:h-28 p-2 sm:p-3 border rounded-md font-mono text-xs sm:text-sm bg-white dark:bg-slate-800 border-gray-300 dark:border-slate-700 text-gray-900 dark:text-slate-200 placeholder-gray-500 dark:placeholder-slate-500 focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all resize-none"
-                />
+              <div className="border-t border-gray-200 dark:border-slate-800">
+                <div className="flex bg-gray-50 dark:bg-slate-900/50 border-b border-gray-200 dark:border-slate-800">
+                  <button 
+                    onClick={() => setBodyMode('builder')}
+                    className={`px-4 py-2 text-[10px] font-black uppercase tracking-widest transition-all ${bodyMode === 'builder' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}
+                  >
+                    Form Builder
+                  </button>
+                  <button 
+                    onClick={() => setBodyMode('raw')}
+                    className={`px-4 py-2 text-[10px] font-black uppercase tracking-widest transition-all ${bodyMode === 'raw' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}
+                  >
+                    Raw JSON
+                  </button>
+                </div>
+                
+                {bodyMode === 'builder' ? (
+                  <div className="p-4 space-y-3 bg-gray-50/50 dark:bg-slate-900/50">
+                    <div className="space-y-2">
+                      {(() => {
+                        const renderFields = (fields, depth = 0) => {
+                          return fields.map((field) => (
+                            <div key={field.id} className="space-y-2">
+                              <div className="flex gap-2 items-center" style={{ marginLeft: `${depth * 20}px` }}>
+                                <input 
+                                  type="checkbox" 
+                                  checked={field.enabled} 
+                                  onChange={(e) => updatePostField(field.id, 'enabled', e.target.checked)}
+                                  className="rounded dark:bg-slate-800"
+                                />
+                                <input 
+                                  value={field.key} 
+                                  onChange={(e) => updatePostField(field.id, 'key', e.target.value)} 
+                                  className="flex-1 p-1.5 border rounded bg-white dark:bg-slate-800 text-[11px] font-mono" 
+                                  placeholder="Key" 
+                                />
+                                {field.type === 'text' ? (
+                                  <input 
+                                    value={field.value} 
+                                    onChange={(e) => updatePostField(field.id, 'value', e.target.value)} 
+                                    className="flex-1 p-1.5 border rounded bg-white dark:bg-slate-800 text-[11px] font-mono" 
+                                    placeholder="Value" 
+                                  />
+                                ) : (
+                                  <div className="flex-1 flex gap-1">
+                                    <button 
+                                      onClick={() => addPostField(field.id, 'text')}
+                                      className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-600 text-[9px] font-bold rounded uppercase"
+                                    >
+                                      + Field
+                                    </button>
+                                    <button 
+                                      onClick={() => addPostField(field.id, 'object')}
+                                      className="px-2 py-1 bg-purple-100 dark:bg-purple-900/30 text-purple-600 text-[9px] font-bold rounded uppercase"
+                                    >
+                                      + Object
+                                    </button>
+                                  </div>
+                                )}
+                                <button 
+                                  onClick={() => removePostField(field.id)}
+                                  className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                </button>
+                              </div>
+                              {field.type === 'object' && field.children && (
+                                <div className="border-l-2 border-gray-200 dark:border-slate-800 ml-1">
+                                  {renderFields(field.children, depth + 1)}
+                                </div>
+                              )}
+                            </div>
+                          ));
+                        };
+                        return renderFields(postFields);
+                      })()}
+                      <div className="flex gap-2 mt-4">
+                        <button 
+                          onClick={() => addPostField(null, 'text')}
+                          className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+                        >
+                          + Add Root Field
+                        </button>
+                        <button 
+                          onClick={() => addPostField(null, 'object')}
+                          className="text-[10px] font-bold text-purple-600 dark:text-purple-400 hover:underline flex items-center gap-1"
+                        >
+                          + Add Root Object
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-2 sm:p-4">
+                    <textarea 
+                      ref={bodyInputRef}
+                      value={requestBody}
+                      onChange={(e) => setRequestBody(e.target.value)}
+                      placeholder='{"key": "value"}'
+                      className="w-full h-32 p-3 border rounded-md font-mono text-xs bg-white dark:bg-slate-800 border-gray-300 dark:border-slate-700 focus:ring-2 focus:ring-blue-500 outline-none resize-none"
+                    />
+                  </div>
+                )}
               </div>
             )}
           </div>
