@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "mock-server": "node server.js",
+    "data-share": "node data-share/server.js"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.2",

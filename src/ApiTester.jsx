@@ -1,9 +1,12 @@
+/* eslint-disable no-unused-vars */
 import React, { useState, useEffect, useRef } from 'react';
 import { NavLink, Link } from 'react-router-dom';
 import JsonValidator from './JsonValidator';
 import JwtDebugger from './JwtDebugger';
 import StressTest from './StressTest';
 import HttpStatusCodeReference from './HttpStatusCodeReference';
+import DataShare from './DataShare';
+import Pot from './Pot';
 
 const ApiTester = () => {
   const urlInputRef = useRef(null);
@@ -32,7 +35,22 @@ const ApiTester = () => {
 
   // specialized inputs for POST/PUT
   const [bodyMode, setBodyMode] = useState('builder'); // 'raw' or 'builder'
-  const [postFields, setPostFields] = useState([{ id: '1', key: 'title', value: '', type: 'text', enabled: true, children: [] }]);
+  const defaultPostFields = [
+    { id: '1', key: 'value', value: '', type: 'text', enabled: true, children: [] },
+    { id: '2', key: 'answer', value: '', type: 'text', enabled: true, children: [] },
+    {
+      id: '3',
+      key: 'sub',
+      value: '',
+      type: 'object',
+      enabled: true,
+      children: [
+        { id: '3-1', key: 'value', value: '', type: 'text', enabled: true, children: [] },
+        { id: '3-2', key: 'answer', value: '', type: 'text', enabled: true, children: [] },
+      ],
+    },
+  ];
+  const [postFields, setPostFields] = useState(defaultPostFields);
   const [putSourceUrl, setPutSourceUrl] = useState('');
 
   // Code Runner State
@@ -629,6 +647,19 @@ const ApiTester = () => {
     setPostFields(removeRecursive(postFields));
   };
 
+  const getValuePlaceholder = (field, depth) => {
+    const keyLower = (field.key || '').toLowerCase();
+    if (depth === 0) {
+      if (keyLower.includes('answer')) return 'Answer';
+      return 'Value';
+    }
+    if (depth === 1) {
+      if (keyLower.includes('answer')) return 'Sub Answer';
+      return 'Sub Value';
+    }
+    return 'Value';
+  };
+
   const loadFromHistory = (item) => {
     setUrl(item.url);
     setMethod(item.method);
@@ -889,6 +920,7 @@ const ApiTester = () => {
         </div>
         <nav className="p-3 space-y-1 flex-grow">
           <NavItem id="dashboard" label="Dashboard" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" /></svg>} />
+          <NavItem id="pot" label="Pot Object" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 3c-3 0-5 2-5 5 0 4 5 8 5 8s5-4 5-8c0-3-2-5-5-5z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 18a7 7 0 0014 0H5z" /></svg>} />
           <NavItem id="graphs" label="Analytics" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2z" /></svg>} />
           <NavItem id="coderunner" label="Code Runner" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>} />
           <NavItem id="usertesting" label="User Testing" icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>} />
@@ -1065,7 +1097,11 @@ const ApiTester = () => {
           </div>
         </header>
 
-        {view === 'graphs' ? (
+        {view === 'pot' ? (
+          <div className="p-4 md:p-8 animate-in fade-in duration-300">
+            <Pot />
+          </div>
+        ) : view === 'graphs' ? (
           /* PERFORMANCE VIEW (GRAPHS) */
           <div className="p-4 md:p-8 space-y-6 animate-in fade-in duration-300 bg-white dark:bg-slate-950">
              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b pb-6">
@@ -1729,7 +1765,7 @@ const ApiTester = () => {
                                     value={field.value} 
                                     onChange={(e) => updatePostField(field.id, 'value', e.target.value)} 
                                     className="flex-1 p-1.5 border rounded bg-white dark:bg-slate-800 text-[11px] font-mono" 
-                                    placeholder="Value" 
+                                    placeholder={getValuePlaceholder(field, depth)} 
                                   />
                                 ) : (
                                   <div className="flex-1 flex gap-1">
@@ -1789,6 +1825,9 @@ const ApiTester = () => {
                       placeholder='{"key": "value"}'
                       className="w-full h-32 p-3 border rounded-md font-mono text-xs bg-white dark:bg-slate-800 border-gray-300 dark:border-slate-700 focus:ring-2 focus:ring-blue-500 outline-none resize-none"
                     />
+                    <div className="mt-2">
+                      <DataShare data={requestBody} />
+                    </div>
                   </div>
                 )}
               </div>
